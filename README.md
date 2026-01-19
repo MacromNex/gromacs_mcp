@@ -57,13 +57,25 @@ This MCP server provides comprehensive access to GROMACS 2025.4 molecular dynami
 
 ## Installation
 
+### Quick Setup (Recommended)
+
+Run the automated setup script:
+
+```bash
+cd gromacs_mcp
+bash quick_setup.sh
+```
+
+The script will create the conda environment, install GROMACS 2025.4 and all dependencies, and display the Claude Code configuration. See `quick_setup.sh --help` for options like `--skip-env`.
+
 ### Prerequisites
 - Conda or Mamba (mamba recommended for faster installation)
 - Python 3.10+
 - GROMACS 2025.4
 
-### Create Environment
-Please follow the environment setup procedure. An example workflow is shown below:
+### Manual Installation (Alternative)
+
+If you prefer manual installation or need to customize the setup:
 
 ```bash
 # Navigate to the MCP directory
