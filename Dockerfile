@@ -33,7 +33,8 @@ COPY scripts/ ./scripts/
 RUN chmod -R a+r /app/scripts/
 COPY configs/ ./configs/
 RUN chmod -R a+r /app/configs/
-RUN mkdir -p jobs tmp/inputs tmp/outputs results
+RUN mkdir -p jobs tmp/inputs tmp/outputs results && \
+    chmod 777 /app /app/jobs /app/tmp /app/tmp/inputs /app/tmp/outputs /app/results
 
 ENV PYTHONPATH=/app
 
