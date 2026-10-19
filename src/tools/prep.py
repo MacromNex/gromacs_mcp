@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
-from gromacs_command import _check_parameter_paths, check_forbidden_options
+from gromacs_command import _check_parameter_names, _check_parameter_paths, check_forbidden_options
 from lib import mdp_templates
 from lib.gromacs_utils import (
     check_grompp_includes,
@@ -234,6 +234,7 @@ def run_grompp(
                                                        "not extra_parameters")
     try:
         check_forbidden_options(extra)
+        _check_parameter_names(extra)
         _check_parameter_paths(extra, out_p.parent)
         check_grompp_includes(topology=top_p, mdp=mdp_p, cwd=out_p.parent)
     except ValueError as e:  # PathNotAllowedError is a ValueError too

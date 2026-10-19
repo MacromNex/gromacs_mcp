@@ -7,7 +7,7 @@ It provides 32 tools in six groups:
 | Group | Tools |
 |---|---|
 | Prepare | `create_mdp`, `validate_mdp`, `run_grompp`, `run_minimization`, `extend_simulation`, `list_force_fields`, `run_full_md_pipeline` |
-| Run | `submit_md_simulation`, `submit_batch_analysis`, `run_gromacs_command` (34 whitelisted gmx tools), `run_gromacs_workflow`, `list_workflows` |
+| Run | `submit_md_simulation`, `submit_batch_analysis`, `run_gromacs_command` (33 whitelisted gmx tools), `run_gromacs_workflow`, `list_workflows` |
 | Jobs | `get_job_status` (progress and ETA), `get_job_log`, `get_job_result`, `cancel_job`, `resume_job`, `list_jobs`, `delete_job`, `clean_jobs` |
 | Analyze | `energy_summary`, `analyze_rdf`, `analyze_msd`, `trajectory_report`, `read_xvg`, `plot_xvg`, `trjconv_preset`, `analyze_tpr` |
 | Info | `check_environment`, `get_server_info`, `list_available_commands`, `get_command_help` |

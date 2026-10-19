@@ -100,7 +100,6 @@ COMMANDS: Dict[str, Dict[str, Any]] = {
                    "default_selections": ["0"]},
     "traj": {"description": "Trajectory properties: box (-ob), positions (-ox), forces (-of) (selection: group)",
              "category": "analysis", "default_selections": ["0"]},
-    "wham": {"description": "Weighted histogram analysis (umbrella sampling PMF)", "category": "analysis"},
     # Preparation and file tools
     "pdb2gmx": {"description": "Make topology from a PDB (-ff, -water, -ignh; selections answer force field prompts if not given)",
                 "category": "prepare"},
@@ -142,10 +141,25 @@ def _validate_flag(flag: str) -> None:
         raise ValueError(f"Invalid file flag {flag!r}: use the option name without the dash, for example 'f' or 'o'")
 
 
-# Options that make gmx start other programs. trjconv -exec hands its value to the shell for every
-# output frame (checked with GROMACS 2026.4, which also accepts --exec), which would undo the no-shell
-# rule. Refused for every command, in parameters and as file option names alike.
-FORBIDDEN_OPTIONS = frozenset({"exec"})
+# Options that make gmx start other programs through the shell: trjconv -exec runs its value for every
+# output frame (checked with GROMACS 2026.4, which also accepts --exec), and -w opens results in a viewer
+# (xmgrace or GMX_VIEW_*) with the file name on a shell command line. Refused for every command, in
+# parameters and as file option names alike.
+FORBIDDEN_OPTIONS = frozenset({"exec", "w"})
+
+# gmx reads compressed files through `gunzip -c < name` in a shell (and falls back to name.gz when name
+# is missing), so file names must not carry characters the shell acts on, nor be compressed files.
+_SHELL_ACTIVE = set("$`;&|<>\n\r")
+
+
+def check_shell_safe_path(path: Union[str, Path]) -> None:
+    text = str(path)
+    bad = sorted(_SHELL_ACTIVE.intersection(text))
+    if bad:
+        raise ValueError(f"File name {text!r} contains {' '.join(repr(c) for c in bad)}; GROMACS may pass file "
+                         "names to a shell, so these characters are not allowed")
+    if text.lower().endswith((".gz", ".z")):
+        raise ValueError(f"Compressed file {text!r}: GROMACS opens these through a shell; decompress it first")
 
 
 def check_forbidden_options(args: List[Any]) -> None:
@@ -181,6 +195,15 @@ def _check_parameter_paths(params: List[str], base: Optional[Path]) -> None:
             continue
         if "/" in p or os.sep in p or p.lower().endswith(_FILE_SUFFIXES):
             _resolve_path(p, base or Path.cwd())
+
+
+def _check_parameter_names(params: List[str]) -> None:
+    """Arguments that look like file names (a slash, or a GROMACS or compressed suffix) must be shell safe."""
+    for p in params:
+        if p.startswith("-") and not p.startswith(("-/", "-.")):
+            continue
+        if "/" in p or os.sep in p or p.lower().endswith(_FILE_SUFFIXES + (".gz", ".z")):
+            check_shell_safe_path(p)
 
 
 def _resolve_path(path: Union[str, Path], base: Optional[Path]) -> Path:
@@ -263,6 +286,9 @@ def run_gromacs_command(
 
         extra = _validate_parameters(parameters)
         check_forbidden_options(extra + [f"-{flag}" for flag in list(in_paths) + list(out_paths)])
+        for path in list(in_paths.values()) + list(out_paths.values()):
+            check_shell_safe_path(path)
+        _check_parameter_names(extra)
         if command_name == "grompp":
             file_opts = {"f", "c", "r", "rb", "n", "p", "t", "e", "ref", "imd", "qmi", "po", "pp", "o"}
             given = {a.lstrip("-").lower() for a in extra if a.startswith("-")}

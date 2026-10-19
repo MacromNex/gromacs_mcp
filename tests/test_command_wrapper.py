@@ -30,7 +30,7 @@ class TestWhitelist:
 
     def test_expected_commands_present(self):
         for name in ("energy", "rms", "rmsf", "rdf", "msd", "grompp", "genion", "solvate", "pdb2gmx",
-                     "editconf", "trjconv", "dump", "check", "traj", "wham"):
+                     "editconf", "trjconv", "dump", "check", "traj"):
             assert name in COMMANDS
 
 
@@ -72,16 +72,55 @@ class TestSelectionsAndStdin:
 
 class TestNoShell:
     def test_metacharacters_are_literal_arguments(self, fake_gmx, tmp_path):
+        f = tmp_path / "t.xtc"
+        f.write_bytes(b"x")
+        literal = ["a b", "it's", "name OW and x < 1", "resname $X"]  # selections and values, not file names
+        r = run_gromacs_command("check", {"f": f}, parameters=literal)
+        assert r["result"] is True
+        argv = fake_gmx.calls()[0]
+        for item in literal:
+            assert item in argv
+
+    def test_shell_active_file_names_are_refused(self, fake_gmx, tmp_path):
+        # gmx opens compressed files through `gunzip -c < name` in a shell (and tries name.gz when name is
+        # missing), so a file name must not carry $ ` ; & | < > or a newline, nor end in .gz or .Z
         marker = tmp_path / "PWNED"
         f = tmp_path / "t.xtc"
         f.write_bytes(b"x")
-        nasty = [f"; touch {marker}", "$(touch " + str(marker) + ")", "`touch " + str(marker) + "`", "a b", "it's"]
-        r = run_gromacs_command("check", {"f": f}, parameters=nasty)
-        assert r["result"] is True
-        assert not marker.exists()
-        argv = fake_gmx.calls()[0]
-        for item in nasty:
-            assert item in argv
+        for nasty in (f"; touch {marker}", f"$(touch {marker})", f"`touch {marker}`", f"{tmp_path}/a|b.trr"):
+            r = run_gromacs_command("check", {"f": f}, parameters=["-f2", nasty])
+            assert r["result"] is False and "not allowed" in r["error"], nasty
+        for name in ("x$(id).xtc", "x.xtc.gz", "x.trr.Z", "a;b.edr"):
+            bad = tmp_path / name
+            bad.write_bytes(b"x")
+            assert run_gromacs_command("check", {"f": bad})["result"] is False, name
+        assert run_gromacs_command("energy", {"f": f}, {"o": tmp_path / "e`x`.xvg"}, selections=["1"])["result"] is False
+        assert fake_gmx.calls() == [] and not marker.exists()
+
+    def test_viewer_option_is_refused(self, fake_gmx, tmp_path):
+        # -w starts a viewer through the shell with the output file name; -now (do not view) is fine
+        f = tmp_path / "e.edr"
+        f.write_bytes(b"x")
+        for spelling in ("-w", "--w", "-W"):
+            r = run_gromacs_command("energy", {"f": f}, {"o": tmp_path / "e.xvg"}, [spelling], selections=["1"])
+            assert r["result"] is False and "not allowed" in r["error"]
+        assert fake_gmx.calls() == []
+        assert run_gromacs_command("energy", {"f": f}, {"o": tmp_path / "e.xvg"}, ["-now"], selections=["1"])["result"]
+
+    def test_children_get_no_display(self, monkeypatch):
+        import json, sys
+        from lib.gromacs_utils import run_command_full
+        monkeypatch.setenv("DISPLAY", ":0")
+        monkeypatch.setenv("GMX_VIEW_XVG", "xmgrace")
+        out = run_command_full([sys.executable, "-c", "import os, json; print(json.dumps(dict(os.environ)))"])
+        env = json.loads(out["stdout"])
+        assert "DISPLAY" not in env and "GMX_VIEW_XVG" not in env and "PATH" in env
+
+    def test_wham_is_not_whitelisted(self, fake_gmx):
+        # wham reads file names from list files (-it, -ix, -if, -ip) that the wrapper never sees, and
+        # opens .gz entries through the shell
+        assert "wham" not in COMMANDS
+        assert run_gromacs_command("wham")["result"] is False and fake_gmx.calls() == []
 
     def test_selection_expression_stays_one_argument(self, fake_gmx, tmp_path):
         f, s = tmp_path / "a.xtc", tmp_path / "a.tpr"
@@ -344,6 +383,18 @@ class TestSandbox:
         r = run_gromacs_command("grompp", {"c": sandbox / "a.gro"}, parameters=[flag, str(sandbox / "bad.top")])
         assert r["result"] is False and "input_files" in r["error"]
         assert fake_gmx.calls() == []
+
+    def test_unreadable_include_lines_are_refused(self, sandbox):
+        # what the checker cannot parse it cannot verify; gmxcpp of another version might accept it
+        from lib.gromacs_utils import check_grompp_includes
+        (sandbox / "inc.itp").write_text("")
+        for line in ('#include junk"../secret.itp"', "#include ../secret.itp", "#include \\"):
+            (sandbox / "t.top").write_text(line + "\n")
+            with pytest.raises(PathNotAllowedError, match="cannot verify"):
+                check_grompp_includes(topology=sandbox / "t.top", cwd=sandbox)
+        for line in ('#include "inc.itp"', '\t#\tinclude\t<inc.itp"', "#include <inc.itp>"):
+            (sandbox / "t.top").write_text(line + "\n")
+            check_grompp_includes(topology=sandbox / "t.top", cwd=sandbox)
 
     def test_mdp_include_key_spelling_variants(self, sandbox, tmp_path):
         from lib.gromacs_utils import check_grompp_includes

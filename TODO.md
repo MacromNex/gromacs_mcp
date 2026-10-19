@@ -29,7 +29,7 @@ Status marks:
 ## 2. Security
 
 - [x] **2.1 Shell injection through `bash -c`.** No shell anywhere (also removed from the analysis workflow). Tests feed `;`, `$(...)`, backticks and quotes and check nothing runs.
-- [x] **2.2 Command whitelist and path sandbox.** 34 whitelisted subcommands; `GMX_MCP_WORKDIR` checks inputs, outputs, working directories, workflow inputs, paths inside `parameters`, `extra_parameters` and `multidir`, and grompp includes (symlinks and `..` resolved); default folders move inside the sandbox.
+- [x] **2.2 Command whitelist and path sandbox.** 33 whitelisted subcommands (`wham` removed in 2.1.0, see 14.5); `GMX_MCP_WORKDIR` checks inputs, outputs, working directories, workflow inputs, paths inside `parameters`, `extra_parameters` and `multidir`, and grompp includes (symlinks and `..` resolved); default folders move inside the sandbox.
 - [~] **2.3 Parameter validation.** Types, flag names and overwrites (warning) are checked. Options are not validated before the run, but when gmx rejects one the error names the closest valid options (12.3).
 - [~] **2.4 Resource limits.** Concurrent job cap, queue and free disk check are done. No cap on `nsteps`, run time per user, or output size.
 
@@ -54,7 +54,7 @@ Status marks:
 
 ## 5. Analysis tools
 
-- [x] **5.1 More analyses.** rdf, msd, gyrate, density, distance, angle, rmsdist, cluster, covar, anaeig, dssp, pairdist, potential, dielectric, traj, wham whitelisted.
+- [x] **5.1 More analyses.** rdf, msd, gyrate, density, distance, angle, rmsdist, cluster, covar, anaeig, dssp, pairdist, potential, dielectric, traj whitelisted (`wham` was, until 14.5).
 - [x] **5.2 Parse `.xvg`.** `read_xvg` with downsampling and statistics.
 - [x] **5.3 Energy analysis with numbers.** `energy_summary`: GROMACS table, full and equilibrated statistics (MSER-5), missing terms skipped with a warning.
 - [x] **5.4 RDF and MSD results.** First peak, first minimum, coordination number; D with error and optional finite size correction.
@@ -80,11 +80,11 @@ Status marks:
 - [x] **7.3 Checkpoint and extend.** `cpt`, `resume`, `extend_simulation`; the extend then resume path is tested.
 - [x] **7.4 Queue.** FIFO with `GMX_MCP_MAX_JOBS`.
 - [~] **7.5 Replica exchange and multi-simulation.** `multidir` and `replex` are passed to mdrun. Not run (needs an MPI or multi-directory setup).
-- [~] **7.6 Free energy and enhanced sampling.** free_energy and umbrella templates with lint rules, `wham` whitelisted, PLUMED detection. Not built: an umbrella window pipeline, `gmx bar` summary, PLUMED `-plumed` option.
+- [~] **7.6 Free energy and enhanced sampling.** free_energy and umbrella templates with lint rules, PLUMED detection. Not built: an umbrella window pipeline, `gmx bar` summary, PLUMED `-plumed` option.
 
 ## 8. Testing and CI
 
-- [x] **8.1 Runnable tests.** 371 tests, about 55 s, also on Python 3.10; without GROMACS 289 pass and the 82 that need it skip.
+- [x] **8.1 Runnable tests.** 376 tests, about 55 s, also on Python 3.10; without GROMACS 294 pass and the 82 that need it skip.
 - [x] **8.2 Regression tests for section 1.**
 - [x] **8.3 Job manager tests,** including mutation checks: the cancel, recovery, run-once claim and workflow resume tests fail when their fixes are removed.
 - [x] **8.4 Security tests** (injection, traversal, symlink escape, whitelist, paths in parameters).
@@ -180,7 +180,7 @@ Open unless marked. Roughly ordered by value for effort.
 
 - [ ] **12.12 Structure intake.** Fetch a PDB entry by ID, repair missing atoms and residues (PDBFixer), choose protonation states (pdb2pqr or propka).
 - [ ] **12.13 Ligands.** Parameterize small molecules (GAFF through acpype, or CGenFF) and merge them into the topology.
-- [ ] **12.14 Free energy pipelines.** Lambda window generation, submission as a job array, `gmx bar` summary; umbrella sampling windows and `wham` PMF with error bars.
+- [ ] **12.14 Free energy pipelines.** Lambda window generation, submission as a job array, `gmx bar` summary; umbrella sampling windows and `wham` PMF with error bars (wham needs its own tool that writes the list files itself and checks every listed path: see 14.5).
 - [ ] **12.15 PLUMED.** Pass a PLUMED input to mdrun when the build supports it.
 - [ ] **12.16 More summaries.** Hydrogen bond counts over time, DSSP secondary structure per residue, PCA with projection plots, clustering with representative structures, contact maps, per residue SASA.
 - [~] **12.17 Convergence tools.** `energy_summary` statistics now carry `statistical_inefficiency`, `n_independent` and an autocorrelation corrected `sem` next to the block averages, and warn when a term has fewer than 10 independent samples. Pure Python, under a second for long series (exact sum over the first 50 lags, growing steps after that, thinning only for slowly decorrelating series over 20000 points). Tests: `test_parsing.py::TestStatistics::test_statistical_inefficiency_of_ar1_series` (AR(1) series with known g), `test_gmx_integration.py::TestAnalysisTools::test_energy_summary`. Not done: a converged or not verdict with reasons.
@@ -231,8 +231,9 @@ The `examples/data` water box (348 SPC/E waters) was run end to end through the 
 
 ## 14. Found while working on 2.1.0
 
-- [x] **14.0 `trjconv -exec` ran shell commands (security, found by an automated review).** trjconv's `-exec` passes its value to the shell for every output frame, and `run_gromacs_command("trjconv", parameters=["-sep", "-exec", "..."])` ran it (confirmed with GROMACS 2026.4; `--exec` works too). Refused for every command under any spelling, in parameters, as a file option name and in `run_grompp(extra_parameters)`. The help text of all 34 whitelisted tools was scanned for other options that start programs; none. grompp `-qmi` added to the file options that must come through `input_files`. Tests: `test_gmx_integration.py::TestRunCommand::test_trjconv_exec_never_runs` (real gmx; runs the command when the guard is removed), `test_command_wrapper.py::TestNoShell::test_options_that_run_programs_are_refused`, `test_exec_as_a_file_option_is_refused`, `test_run_grompp_refuses_exec_in_extra_parameters`.
+- [x] **14.0 `trjconv -exec` ran shell commands (security, found by an automated review).** trjconv's `-exec` passes its value to the shell for every output frame, and `run_gromacs_command("trjconv", parameters=["-sep", "-exec", "..."])` ran it (confirmed with GROMACS 2026.4; `--exec` works too). Refused for every command under any spelling, in parameters, as a file option name and in `run_grompp(extra_parameters)`. A scan of the help texts missed `-w` (its help only says "View output"); see 14.5. grompp `-qmi` added to the file options that must come through `input_files`. Tests: `test_gmx_integration.py::TestRunCommand::test_trjconv_exec_never_runs` (real gmx; runs the command when the guard is removed), `test_command_wrapper.py::TestNoShell::test_options_that_run_programs_are_refused`, `test_exec_as_a_file_option_is_refused`, `test_run_grompp_refuses_exec_in_extra_parameters`.
 - [x] **14.1 Progress after extend plus resume.** mdrun `-append` does not print the parameters again, so after extend and resume md.log only holds the first run's `nsteps`: percent showed 100 as soon as the old count was passed, and a run stopped by maxh past it counted as complete (now `completed` instead of `stopped`). The MD wrapper and the job manager now take the target from the `.tpr` (`read_tpr_nsteps` streams `gmx dump` and stops at the line, before the topology); the manager keeps it in the job record. Tests: `test_gmx_integration.py::TestMdRun::test_extended_run_stopped_by_maxh_is_not_complete` (real mdrun; fails without the fix), `test_parsing.py::TestCheckAndLog::test_nsteps_from_the_tpr_overrides_the_log`.
 - [x] **14.2 Minimization jobs and zero step runs looked stopped.** A converged steepest descent stops before `nsteps` by design, and `nsteps=0` was never counted as complete, so both would have become `stopped` with a hint to resume. `complete` now also means a minimizer converged, or 0 of 0 steps. Tests: `test_parsing.py::TestCheckAndLog::test_converged_minimization_is_complete` (real em md.log), `test_zero_steps_and_no_limit`, `test_gmx_integration.py::TestMdRun::test_minimization_as_a_job_is_complete_when_converged`, `test_nsteps_zero_is_respected`.
 - [x] **14.3 `analyze_tpr` did not list the files it wrote** (the summary and the raw dump) in `output_files`. Test: `test_gmx_integration.py::TestAnalyzeTpr::test_saved_files_are_listed_as_absolute_paths`.
 - [x] **14.4 Statistical inefficiency estimate.** The first version took growing lag steps from the start (pymbar fast mode) and overestimated g by 20 to 30 percent on AR(1) series; thinning long series also turned white noise into g = 2. The first 50 lags are now exact and thinning only happens for slowly decorrelating series. Test: `test_parsing.py::TestStatistics::test_statistical_inefficiency_of_ar1_series`.
+- [x] **14.5 More ways gmx reaches a shell (security, second automated review).** `-w` (most analysis tools) opens results in a viewer through the shell with the file name on the command line: refused, and every gmx child runs without `DISPLAY` and `GMX_VIEW_*`. gmx reads compressed files through `gunzip -c < name` (strings found in libgromacs), also as a fallback when `name` is missing and `name.gz` exists: file names with `$ \` ; & | < >` or a newline, and `.gz`/`.Z` names, are refused in file options and in path-like parameters. `wham` removed from the whitelist: its list files (`-it`, `-ix`, `-if`, `-ip`) name files the wrapper never sees, outside the sandbox check, and `.gz` entries go through the shell. Include lines the checker cannot parse are now refused (fail closed); GROMACS 2026.4 itself rejects the loose spellings tried. Tests: `test_command_wrapper.py::TestNoShell::test_shell_active_file_names_are_refused`, `test_viewer_option_is_refused`, `test_children_get_no_display`, `test_wham_is_not_whitelisted`, `TestSandbox::test_unreadable_include_lines_are_refused` (each fails with its guard removed).

@@ -14,7 +14,9 @@ Fixes everything found in the end to end water box test of 2.0.0 (TODO.md sectio
 
 ### Security
 
-- `run_gromacs_command("trjconv")` accepted `-exec`, which makes trjconv pass its value to the shell for every output frame, so a client could run any command despite the no-shell design (confirmed with GROMACS 2026.4, which also accepts `--exec`). The option is now refused for every command under any spelling, in `parameters`, as a file option name and in `run_grompp(extra_parameters)`. A scan of the help text of all 34 whitelisted tools found no other option that starts a program. grompp's `-qmi` input file must also come through `input_files` now, like its other file options.
+- `run_gromacs_command("trjconv")` accepted `-exec`, which makes trjconv pass its value to the shell for every output frame, so a client could run any command despite the no-shell design (confirmed with GROMACS 2026.4, which also accepts `--exec`). The option is now refused for every command under any spelling, in `parameters`, as a file option name and in `run_grompp(extra_parameters)`. grompp's `-qmi` input file must also come through `input_files` now, like its other file options.
+- More places where gmx hands file names to a shell, found by a second review: `-w` opens results in a viewer through the shell (now refused, and gmx runs without `DISPLAY` or `GMX_VIEW_*`), and compressed files are read through `gunzip -c < name` (file names with `$ \` ; & | < >` or a newline, and `.gz`/`.Z` files, are now refused). `wham` was removed from the whitelist (33 tools now): it reads file names from list files the server cannot check and opens `.gz` entries through the shell.
+- With `GMX_MCP_WORKDIR` set, an `#include` line the checker cannot read is refused instead of skipped, so a preprocessor that parses includes more loosely cannot be used to read files outside the sandbox.
 
 ### Fixed
 

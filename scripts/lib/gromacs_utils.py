@@ -102,9 +102,9 @@ def run_command_full(
         dict with success, returncode, stdout, stderr, command, timed_out
     """
     cmd = [str(c) for c in cmd]
-    run_env = None
-    if env:
-        run_env = {**os.environ, **env}
+    # gmx -w opens results in a viewer through the shell (GMX_VIEW_*, xmgrace); never give it a display
+    run_env = {k: v for k, v in os.environ.items() if k != "DISPLAY" and not k.startswith("GMX_VIEW_")}
+    run_env.update(env or {})
     logger.debug("Running command: %s", " ".join(cmd))
     try:
         proc = subprocess.run(
@@ -995,7 +995,21 @@ def list_force_fields() -> List[Dict[str, Any]]:
 # ==============================================================================
 # Sandbox: files grompp reads through #include and mdp include = -I...
 # ==============================================================================
-_INCLUDE_RE = re.compile(r'^\s*#\s*include\s+["<]([^">]+)[">]', re.MULTILINE)
+_INCLUDE_LINE_RE = re.compile(r'^\s*#\s*include\b(.*)$', re.MULTILINE)
+_INCLUDE_PATH_RE = re.compile(r'^\s*["<]([^">]+)[">]')
+
+
+def _include_names(text: str, source: str) -> List[str]:
+    """File names of the #include lines. A line whose name cannot be read the way gmxcpp reads it
+    ("name" or <name>) is refused rather than skipped: another preprocessor version might accept it."""
+    names = []
+    for rest in _INCLUDE_LINE_RE.findall(text):
+        m = _INCLUDE_PATH_RE.match(rest)
+        if not m:
+            raise PathNotAllowedError(f"{source}: cannot verify the include '#include{rest.rstrip()}'; "
+                                      'write it as #include "file.itp"')
+        names.append(m.group(1))
+    return names
 
 
 def _inside(path: Path, roots: List[Path]) -> bool:
@@ -1058,7 +1072,7 @@ def check_grompp_includes(topology: Optional[PathLike] = None, mdp: Optional[Pat
         if current in seen or not current.is_file():
             continue
         seen.add(current)
-        for name in _INCLUDE_RE.findall(current.read_text(errors="replace")):
+        for name in _include_names(current.read_text(errors="replace"), current.name):
             p = Path(name).expanduser()
             if p.is_absolute():
                 candidates = [p]
