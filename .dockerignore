@@ -1,4 +1,5 @@
 env/
+.venv/
 repo/
 .git/
 .github/
@@ -11,11 +12,12 @@ __pycache__/
 .pipeline/
 claude_outputs/
 test_output/
-demo_output/
-analysis_output/
 results/
 jobs/
-reports/
+logs/
+docs/
+tests/
 tmp/
 *.swp
 *.out
+*.log

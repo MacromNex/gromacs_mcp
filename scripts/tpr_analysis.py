@@ -3,124 +3,44 @@
 Script: tpr_analysis.py
 Description: Read and analyze GROMACS TPR files
 
-Original Use Case: examples/use_case_2_read_tpr_file.py
-Dependencies Removed: None (uses standard library + GROMACS command)
-
 Usage:
     python scripts/tpr_analysis.py --input <tpr_file> --output <output_file>
+    python scripts/tpr_analysis.py --inputs a.tpr --inputs b.tpr --output-dir results/ --result-json summary.json
 
 Example:
     python scripts/tpr_analysis.py --input examples/data/sample.tpr --output results/analysis.txt
 """
 
-# ==============================================================================
-# Minimal Imports (only essential packages)
-# ==============================================================================
 import argparse
-import sys
-import os
-import logging
 import json
+import logging
 from pathlib import Path
-from typing import Union, Optional, Dict, Any
+from typing import Any, Dict, List, Optional, Union
 
-# Import shared utilities
-try:
-    from lib.gromacs_utils import (
-        find_gromacs_command, run_command, ensure_output_directory,
-        check_file_exists, get_file_size, parse_tpr_dump_output
-    )
-except ImportError:
-    # Fallback if lib not available
-    import shutil
-    import subprocess
-    import re
+from lib.gromacs_utils import (
+    GromacsNotFoundError,
+    check_file_exists,
+    deep_merge,
+    find_gromacs_command,
+    parse_tpr_dump_output,
+    resolve_in_workdir,
+    run_command_full,
+    summarize_gmx_error,
+    write_json_atomic,
+)
 
-    def find_gromacs_command():
-        gmx_cmd = shutil.which("gmx")
-        if gmx_cmd:
-            return ["gmx"]
-        script_dir = Path(__file__).parent.parent
-        env_path = script_dir / "env"
-        if env_path.exists():
-            return ["mamba", "run", "-p", str(env_path), "gmx"]
-        return ["gmx"]
-
-    def run_command(cmd, working_dir=None, timeout=60):
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True,
-                                    cwd=working_dir, timeout=timeout)
-            return result.returncode == 0, result.stdout, result.stderr
-        except Exception as e:
-            return False, "", str(e)
-
-    def check_file_exists(file_path, description="File"):
-        if not Path(file_path).exists():
-            logging.getLogger(__name__).error(f"{description} not found: {file_path}")
-            return False
-        return True
-
-    def get_file_size(file_path):
-        try:
-            return Path(file_path).stat().st_size
-        except:
-            return 0
-
-    def parse_tpr_dump_output(dump_output):
-        info = {}
-        patterns = {
-            'nsteps': r'nsteps\s*=\s*(\d+)',
-            'dt': r'delta-t\s*=\s*([\d\.e\-\+]+)',
-            'natoms': r'#atoms\s*=\s*(\d+)',
-            'title': r'title:\s*"([^"]*)"',
-            'integrator': r'integrator\s*=\s*(\w+)',
-            'nstlist': r'nstlist\s*=\s*(\d+)',
-            'temperature': r'ref-t.*?(\d+\.?\d*)',
-            'pressure': r'ref-p.*?(\d+\.?\d*)',
-        }
-
-        for key, pattern in patterns.items():
-            match = re.search(pattern, dump_output, re.IGNORECASE)
-            if match:
-                try:
-                    value = match.group(1)
-                    if key in ['nsteps', 'natoms', 'nstlist']:
-                        info[key] = int(value)
-                    elif key in ['dt', 'temperature', 'pressure']:
-                        info[key] = float(value)
-                    else:
-                        info[key] = value
-                except:
-                    info[key] = match.group(1)
-
-        atom_lines = [line for line in dump_output.split('\n') if 'atom[' in line.lower()]
-        info['total_atoms'] = len(atom_lines)
-        return info
-
-# ==============================================================================
-# Configuration
-# ==============================================================================
-DEFAULT_CONFIG = {
-    "analysis": {
-        "timeout": 60,          # 1 minute timeout for dump command
-        "include_raw_dump": True,  # Include raw gmx dump output
-        "output_format": "text"    # or "json"
-    },
-    "output_sections": [
-        "file_info",
-        "simulation_parameters",
-        "system_information",
-        "raw_dump"
-    ]
-}
-
-# Configure logging
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
-# ==============================================================================
-# Core Function
-# ==============================================================================
+DEFAULT_CONFIG = {
+    "analysis": {
+        "timeout": 60,
+        "include_raw_dump": False,
+        "output_format": "text",
+    },
+}
+
+
 def run_tpr_analysis(
     input_file: Union[str, Path],
     output_file: Optional[Union[str, Path]] = None,
@@ -132,153 +52,139 @@ def run_tpr_analysis(
 
     Args:
         input_file: Path to TPR input file
-        output_file: Path to save analysis results (if None, return dict only)
-        config: Configuration dict (uses DEFAULT_CONFIG if not provided)
-        **kwargs: Override specific config parameters
-            - verbose: Enable verbose logging
-            - format: Output format ("text", "json")
-            - include_raw: Include raw dump output
+        output_file: Path to save analysis results (text or json depending on `format`)
+        config: Configuration dict
+        **kwargs:
+            verbose: enable debug logging
+            format: "text" or "json" for the saved file
+            raw_dump_path: if set, the full `gmx dump` text is written here
+            timeout: seconds for gmx dump
 
     Returns:
-        Dict containing:
-            - result: Analysis success status
-            - tpr_info: Parsed TPR file information
-            - analysis_text: Formatted analysis text
-            - output_file: Path to output file (if saved)
-
-    Example:
-        >>> result = run_tpr_analysis("input.tpr", "analysis.txt")
-        >>> print(result['tpr_info']['natoms'])
+        dict with result, tpr_info (parsed summary), analysis_text, output_file,
+        raw_dump_file (path or None). The raw dump itself is never embedded.
     """
-    # Setup
     input_path = Path(input_file)
-    config = {**DEFAULT_CONFIG, **(config or {}), **kwargs}
+    config = deep_merge(DEFAULT_CONFIG, config)
+    analysis_cfg = config["analysis"]
 
-    # Extract parameters
-    verbose = kwargs.get('verbose', False)
-    output_format = kwargs.get('format', config['analysis']['output_format'])
-    include_raw = kwargs.get('include_raw', config['analysis']['include_raw_dump'])
-    timeout = kwargs.get('timeout', config['analysis']['timeout'])
-
-    if verbose:
+    output_format = kwargs.get('format', analysis_cfg['output_format'])
+    timeout = kwargs.get('timeout', analysis_cfg['timeout'])
+    raw_dump_path = kwargs.get('raw_dump_path')
+    if kwargs.get('verbose'):
         logger.setLevel(logging.DEBUG)
 
-    logger.info(f"Analyzing TPR file: {input_path}")
-
-    # Validate input
+    logger.info("Analyzing TPR file: %s", input_path)
     if not check_file_exists(input_path, "TPR file"):
         raise FileNotFoundError(f"TPR file not found: {input_path}")
 
     try:
-        # Find GROMACS command
         gmx_cmd = find_gromacs_command()
-        logger.debug(f"Using GROMACS command: {' '.join(gmx_cmd)}")
-
-        # Run gmx dump command
-        dump_cmd = gmx_cmd + ["dump", "-s", str(input_path)]
-
-        logger.info("Extracting TPR file information using gmx dump...")
-        success, stdout, stderr = run_command(dump_cmd, timeout=timeout)
-
-        if not success:
-            logger.error("Failed to run gmx dump")
-            if stderr:
-                logger.error(f"Error: {stderr}")
+        res = run_command_full(gmx_cmd + ["dump", "-s", str(input_path)], timeout=timeout)
+        if not res["success"]:
             return {
                 "result": False,
-                "error": "Failed to run gmx dump",
-                "stderr": stderr
+                "error": summarize_gmx_error(res["stderr"]) or "Failed to run gmx dump",
+                "stderr": res["stderr"],
+                "command": res["command"],
             }
 
-        # Parse the output
-        logger.info("Parsing TPR file information...")
-        tpr_info = parse_tpr_dump_output(stdout)
-
-        # Add file information
-        file_stat = input_path.stat()
-        tpr_info['file_size'] = file_stat.st_size
+        dump_text = res["stdout"]
+        tpr_info = parse_tpr_dump_output(dump_text)
+        tpr_info['file_size'] = input_path.stat().st_size
         tpr_info['file_path'] = str(input_path.absolute())
+        analysis_text = format_analysis_text(tpr_info)
 
-        # Generate analysis text
-        analysis_text = format_analysis_text(tpr_info, include_raw_dump=include_raw, raw_dump=stdout)
+        raw_file = None
+        if raw_dump_path:
+            raw_file = Path(raw_dump_path)
+            raw_file.parent.mkdir(parents=True, exist_ok=True)
+            raw_file.write_text(dump_text)
 
-        # Save output if requested
         output_path = None
         if output_file:
             output_path = Path(output_file)
             output_path.parent.mkdir(parents=True, exist_ok=True)
-
             if output_format.lower() == "json":
-                # Save as JSON
-                output_data = {
+                write_json_atomic(output_path, {
                     "tpr_info": tpr_info,
-                    "analysis_text": analysis_text
-                }
-                if include_raw:
-                    output_data["raw_dump"] = stdout
-
-                with open(output_path, 'w') as f:
-                    json.dump(output_data, f, indent=2)
+                    "analysis_text": analysis_text,
+                    "raw_dump_file": str(raw_file) if raw_file else None,
+                })
             else:
-                # Save as text
-                with open(output_path, 'w') as f:
-                    f.write(analysis_text)
-
-            logger.info(f"Analysis saved to: {output_path}")
-
-        # Print analysis to console
-        print(analysis_text)
-
-        logger.info("TPR file analysis completed successfully")
+                output_path.write_text(analysis_text)
+            logger.info("Analysis saved to: %s", output_path)
 
         return {
             "result": True,
             "tpr_info": tpr_info,
             "analysis_text": analysis_text,
             "output_file": str(output_path) if output_path else None,
+            "raw_dump_file": str(raw_file) if raw_file else None,
             "metadata": {
                 "input_file": str(input_path),
                 "output_format": output_format,
-                "file_size": tpr_info['file_size']
-            }
+                "file_size": tpr_info['file_size'],
+            },
         }
 
+    except GromacsNotFoundError as e:
+        return {"result": False, "error": str(e)}
     except Exception as e:
-        logger.error(f"Error during TPR analysis: {e}")
-        return {
-            "result": False,
-            "error": str(e),
-            "metadata": {
-                "input_file": str(input_path),
-                "config": config
-            }
-        }
+        logger.error("Error during TPR analysis: %s", e)
+        return {"result": False, "error": str(e), "metadata": {"input_file": str(input_path)}}
 
-def format_analysis_text(tpr_info: Dict[str, Any], include_raw_dump: bool = False, raw_dump: str = "") -> str:
+
+def run_tpr_batch(
+    input_files: List[Union[str, Path]],
+    output_dir: Optional[Union[str, Path]] = None,
+    **kwargs
+) -> Dict[str, Any]:
     """
-    Format TPR analysis information as readable text.
-
-    Parameters:
-    -----------
-    tpr_info : dict
-        Parsed TPR information
-    include_raw_dump : bool
-        Whether to include raw dump output
-    raw_dump : str
-        Raw dump output
-
-    Returns:
-    --------
-    str
-        Formatted analysis text
+    Analyze several TPR files. Writes <output_dir>/<stem>.<format> per file when
+    output_dir is given. One failure does not stop the others: the batch succeeds when at
+    least one file does, and failed files are named in warnings and in their own entries.
     """
-    lines = []
-    lines.append("=== TPR File Analysis Results ===")
-    lines.append(f"File: {tpr_info.get('file_path', 'Unknown')}")
-    lines.append(f"Size: {tpr_info.get('file_size', 0):,} bytes")
-    lines.append("")
+    fmt = kwargs.get("format", "text")
+    ext = "json" if fmt == "json" else "txt"
+    entries = []
+    for f in input_files:
+        p = Path(f)
+        out_file = Path(output_dir) / f"{p.stem}.{ext}" if output_dir else None
+        try:
+            res = run_tpr_analysis(p, output_file=out_file, **kwargs)
+        except FileNotFoundError as e:
+            res = {"result": False, "error": str(e)}
+        entries.append({
+            "input": str(p),
+            "result": res["result"],
+            "tpr_info": res.get("tpr_info"),
+            "output_file": res.get("output_file"),
+            "error": res.get("error"),
+        })
+    ok = sum(1 for e in entries if e["result"])
+    failed = [e for e in entries if not e["result"]]
+    out = {
+        "result": ok > 0,
+        "total": len(entries),
+        "succeeded": ok,
+        "failed": len(failed),
+        "results": entries,
+        "output_files": [e["output_file"] for e in entries if e.get("output_file")],
+        "warnings": [f"{len(failed)} of {len(entries)} files failed: "
+                     + "; ".join(f"{Path(e['input']).name}: {e['error']}" for e in failed)] if failed else [],
+    }
+    if not ok:
+        out["error"] = f"All {len(entries)} files failed" + (f"; first: {failed[0]['error']}" if failed else "")
+    return out
 
-    # Simulation Parameters
+
+def format_analysis_text(tpr_info: Dict[str, Any]) -> str:
+    """Format the parsed TPR information as readable text."""
+    lines = ["=== TPR File Analysis Results ===",
+             f"File: {tpr_info.get('file_path', 'Unknown')}",
+             f"Size: {tpr_info.get('file_size', 0):,} bytes", ""]
+
     lines.append("Simulation Parameters:")
     if 'title' in tpr_info:
         lines.append(f"  Title: {tpr_info['title']}")
@@ -289,81 +195,39 @@ def format_analysis_text(tpr_info: Dict[str, Any], include_raw_dump: bool = Fals
     if 'dt' in tpr_info:
         lines.append(f"  Time step: {tpr_info['dt']} ps")
         if 'nsteps' in tpr_info:
-            total_time = tpr_info['nsteps'] * tpr_info['dt']
-            lines.append(f"  Total simulation time: {total_time:.1f} ps")
-
+            lines.append(f"  Total simulation time: {tpr_info['nsteps'] * tpr_info['dt']:.1f} ps")
+    for key, label in (("coulombtype", "Electrostatics"), ("tcoupl", "Thermostat"), ("pcoupl", "Barostat")):
+        if key in tpr_info:
+            lines.append(f"  {label}: {tpr_info[key]}")
     lines.append("")
 
-    # System Information
     lines.append("System Information:")
     if 'natoms' in tpr_info:
         lines.append(f"  Number of atoms: {tpr_info['natoms']:,}")
-    if 'total_atoms' in tpr_info and tpr_info['total_atoms'] != tpr_info.get('natoms', 0):
-        lines.append(f"  Atoms found in dump: {tpr_info['total_atoms']:,}")
-
+    if 'nmolecules' in tpr_info:
+        lines.append(f"  Number of molecules: {tpr_info['nmolecules']:,}")
     if 'temperature' in tpr_info:
         lines.append(f"  Reference temperature: {tpr_info['temperature']} K")
     if 'pressure' in tpr_info:
         lines.append(f"  Reference pressure: {tpr_info['pressure']} bar")
-
-    # Add raw dump if requested
-    if include_raw_dump and raw_dump:
-        lines.append("")
-        lines.append("=== Raw gmx dump output ===")
-        lines.append(raw_dump)
-
     return '\n'.join(lines)
 
-# ==============================================================================
-# CLI Interface
-# ==============================================================================
+
 def main():
-    parser = argparse.ArgumentParser(
-        description=__doc__,
-        formatter_class=argparse.RawDescriptionHelpFormatter
-    )
-
-    parser.add_argument(
-        '--input', '-i',
-        required=True,
-        help='Input TPR file path'
-    )
-
-    parser.add_argument(
-        '--output', '-o',
-        help='Output file path (optional)'
-    )
-
-    parser.add_argument(
-        '--format', '-f',
-        choices=['text', 'json'],
-        default='text',
-        help='Output format (default: text)'
-    )
-
-    parser.add_argument(
-        '--config', '-c',
-        help='Config file (JSON format)'
-    )
-
-    parser.add_argument(
-        '--verbose', '-v',
-        action='store_true',
-        help='Enable verbose output'
-    )
-
-    parser.add_argument(
-        '--include-raw',
-        action='store_true',
-        help='Include raw gmx dump output'
-    )
-
-    parser.add_argument(
-        '--info',
-        action='store_true',
-        help='Show TPR file format information'
-    )
-
+    parser = argparse.ArgumentParser(description=__doc__,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--input', '-i', help='Input TPR file path')
+    parser.add_argument('--inputs', action='append',
+                        help='TPR file for batch mode (repeat the option for each file)')
+    parser.add_argument('--output', '-o', help='Output file path (single input)')
+    parser.add_argument('--output-dir', help='Output directory (batch mode)')
+    parser.add_argument('--result-json', help='Write the full result dict as JSON here')
+    parser.add_argument('--format', '-f', choices=['text', 'json'], default='text')
+    parser.add_argument('--config', '-c', help='Config file (JSON format)')
+    parser.add_argument('--verbose', '-v', action='store_true')
+    parser.add_argument('--include-raw', action='store_true',
+                        help='Also save the full gmx dump next to the output file')
+    parser.add_argument('--info', action='store_true', help='Show TPR file format information')
     args = parser.parse_args()
 
     if args.info:
@@ -375,43 +239,40 @@ def main():
         print("- Can be analyzed using gmx dump, gmx check, etc.")
         return 0
 
-    # Load config if provided
+    if not args.input and not args.inputs:
+        parser.error("one of --input or --inputs is required")
+
     config = None
     if args.config:
         with open(args.config) as f:
             config = json.load(f)
 
-    # Prepare kwargs
-    kwargs = {}
+    kwargs = {'format': args.format}
     if args.verbose:
-        kwargs['verbose'] = args.verbose
-    if args.format:
-        kwargs['format'] = args.format
-    if args.include_raw:
-        kwargs['include_raw'] = args.include_raw
+        kwargs['verbose'] = True
 
     try:
-        # Run analysis
-        result = run_tpr_analysis(
-            input_file=args.input,
-            output_file=args.output,
-            config=config,
-            **kwargs
-        )
-
-        if result['result']:
-            if result['output_file']:
-                print(f"✅ Success: Analysis saved to {result['output_file']}")
-            else:
-                print("✅ Success: Analysis completed")
-            return 0
+        if args.inputs:
+            files = [str(resolve_in_workdir(f)) for f in args.inputs]  # re-check the sandbox here too
+            result = run_tpr_batch(files, output_dir=args.output_dir, config=config, **kwargs)
         else:
-            print(f"❌ Failed: {result.get('error', 'Unknown error')}")
-            return 1
-
+            if args.include_raw and args.output:
+                kwargs['raw_dump_path'] = str(Path(args.output).with_suffix('.dump.txt'))
+            result = run_tpr_analysis(args.input, output_file=args.output, config=config, **kwargs)
+            if result['result']:
+                print(result['analysis_text'])
     except Exception as e:
-        print(f"❌ Error: {e}")
-        return 1
+        result = {"result": False, "error": str(e)}
+
+    if args.result_json:
+        write_json_atomic(args.result_json, result)
+
+    if result['result']:
+        print("Success: analysis completed")
+        return 0
+    print(f"Failed: {result.get('error', 'one or more files failed')}")
+    return 1
+
 
 if __name__ == '__main__':
-    sys.exit(main())
+    raise SystemExit(main())

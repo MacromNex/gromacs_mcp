@@ -18,4 +18,10 @@ repo/
 /jobs/
 output/
 test_output/
-examples/
+logs/
+gromacs_mcp.log
+.pytest_cache/
+*.tmp
+.venv/
+examples/data/*.tpr
+runs/

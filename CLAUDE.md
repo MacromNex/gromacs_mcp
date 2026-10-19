@@ -1,87 +1,47 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for working on this repository.
 
-## What This Is
+## What this is
 
-MCP server exposing GROMACS 2025.4 molecular dynamics tools via FastMCP. Provides 13 tools: sync operations (analyze_tpr, run_gromacs_command, run_gromacs_workflow), async job submission (submit_md_simulation, submit_batch_analysis), job management (get/cancel/list jobs), and info tools.
+An MCP server (FastMCP 4) that exposes GROMACS: system preparation, MD runs as background jobs, and analysis that returns numbers. 32 tools, 3 resource templates, 3 prompts. It runs from a checkout or Docker; it is not packaged as a wheel.
 
-## Build & Run
-
-```bash
-# Full setup from scratch
-bash quick_setup.sh
-
-# Run the MCP server
-./env/bin/python src/server.py
-
-# Dev mode (hot reload + inspector)
-fastmcp dev src/server.py
-
-# Register with Claude Code
-claude mcp add gromacs-2025.4 -- $(pwd)/env/bin/python $(pwd)/src/server.py
-```
-
-### Docker
+## Run and test
 
 ```bash
-docker build -t gromacs-mcp .
-docker run gromacs-mcp
+bash quick_setup.sh --dev                         # ./env with deps; finds or installs gmx; builds examples/data/sample.tpr
+./env/bin/python src/server.py                    # stdio server
+./env/bin/python -m pytest                        # full suite, about 55 s with GROMACS
+./env/bin/python -m pytest -m "not slow"          # skip the end to end simulation
+./env/bin/python -m pytest tests/test_jobs.py -k cancel
 ```
 
-## Testing
+`GMX_MCP_HOME` decides where jobs/, results/ and logs/ go; the tests point it at a temporary folder (tests/conftest.py) so nothing is written into the repo.
 
-```bash
-# Unit tests (pytest)
-./env/bin/python -m pytest tests/test_server.py -v
+## Layout
 
-# Integration tests (custom runner, outputs JSON report)
-./env/bin/python tests/run_integration_tests.py
+- `src/server.py`: core tools (jobs, analyze_tpr, run_gromacs_command, workflow, submit, info) and registration of the modules in `src/tools/`.
+- `src/tools/`: `prep.py` (mdp, grompp, minimization, extend, force fields), `analysis.py` (energy, rdf, msd, report, xvg, plot, trjconv), `pipeline.py` (full_md), `env_tools.py` (check_environment, gmx help), `resources.py` (resources and prompts), `registry.py` (tool categories).
+- `src/jobs/manager.py`: background jobs. Scripts run as `sys.executable scripts/<x>.py --flags --result-json jobs/<id>/output.json` in their own session; outputs default to `runs/<id>/`; metadata is written atomically under a lock; final state is decided only in `_finalize` (own jobs) and `_reconcile` (everything else), and a run mdrun ended cleanly before its last step is `stopped`, not completed or failed; processes are identified by pid plus start time; orphaned queued jobs are claimed under `fcntl.flock`.
+- `src/utils.py`: result envelope (`format_tool_result`), output folders, logging (loguru, stderr and file, never stdout).
+- `scripts/lib/gromacs_utils.py`: the only place that finds and runs gmx (`find_gromacs_command`, `run_command_full`), the path sandbox (`resolve_in_workdir`), and all parsers.
+- `scripts/lib/mdp_templates.py`: mdp templates and lint rules.
+- `scripts/gromacs_command.py`: the command whitelist (`COMMANDS`) and stdin selections.
+- `scripts/md_simulation.py`, `tpr_analysis.py`, `gromacs_workflow.py`: what jobs and workflows execute; each also works as a CLI.
+- `tests/fixtures/`: real GROMACS outputs used by the parser tests.
 
-# Direct tool validation against sample data
-./env/bin/python tests/validate_mcp_tools.py
+## Conventions
 
-# Basic server startup test
-./env/bin/python test_mcp_client.py
-```
-
-## Architecture
-
-### Dual API Pattern
-
-Every GROMACS capability has two interfaces sharing the same core logic:
-- **CLI** (`scripts/*.py`): Standalone argparse scripts runnable directly
-- **MCP** (`src/server.py`): FastMCP tool wrappers that call into the scripts
-
-Shared utilities live in `scripts/lib/gromacs_utils.py` (subprocess execution, gmx binary discovery, TPR parsing).
-
-### Sync vs Async Tools
-
-Sync tools (`analyze_tpr`, `run_gromacs_command`, `run_gromacs_workflow`) call scripts directly and return results immediately.
-
-Submit tools (`submit_md_simulation`, `submit_batch_analysis`) use `src/jobs/manager.py` to run scripts in background threads via `mamba run -p ./env`. Jobs persist metadata as JSON in `jobs/<job_id>/` directories. Job lifecycle: PENDING → RUNNING → COMPLETED/FAILED/CANCELLED.
-
-### GROMACS Binary Discovery
-
-`scripts/lib/gromacs_utils.py:find_gromacs_command()` tries system `gmx` first, falls back to `mamba run -p ./env gmx`. The `configs/default_config.json` defines `command_prefix` and `fallback_command` for this.
-
-### Result Convention
-
-All tool functions return `dict` with `"status": "success"|"error"`. Use `src/utils.py:format_tool_result()` to wrap results consistently.
-
-### Configuration Layering
-
-Each script has an embedded `DEFAULT_CONFIG` dict. Overrides come from: JSON config files (`--config` CLI flag) → function kwargs → defaults.
-
-## Key Files
-
-- `src/server.py` — All 13 MCP tool definitions
-- `src/jobs/manager.py` — Thread-based job executor with log capture
-- `src/utils.py` — validate_input_file, setup_output_directory, format_tool_result, configure_logging
-- `scripts/lib/gromacs_utils.py` — find_gromacs_command, run_command, parse_tpr_dump_output
-- `configs/default_config.json` — Global config (timeouts, paths, performance limits)
-- `examples/data/sample.tpr` — 1000 Argon atoms test system used by all tests
-
-## Dependencies
-
-Runtime: `fastmcp`, `loguru`, GROMACS 2025.4 (via conda-forge). Python 3.10+. Conda/mamba for environment management.
+- Never run gmx through a shell. Build an argv list and pass interactive answers as `stdin_text` (or `selections` in `run_gromacs_command`).
+- New gmx subcommands go into `COMMANDS` in `scripts/gromacs_command.py` with their default selections.
+- Every tool returns `format_tool_result(...)`: flat dict with `status`, `warnings`, `output_files` (absolute paths, always; sizes go in `file_sizes`), and `error` on failure. Pass the script result as `data` so stderr and the command survive failures.
+- Shorten output for clients only in the MCP tool layer (`compact_for_client` in `server.run_gromacs_command`). Library callers such as `analysis._gmx` parse the full stdout and stderr (the energy menu and `gmx check` report are on stderr).
+- Register tools through `registry.tool(category)`. `tests/test_server.py::BAD_CALLS` must get an entry for every new tool (a test fails otherwise) and the envelope test then covers it.
+- Resolve user paths with `resolve_in_workdir` so `GMX_MCP_WORKDIR` holds.
+- Write parsers against real GROMACS output: save a sample in `tests/fixtures/` first. GROMACS formats change between versions (`dt` not `delta-t`, `ref-p` is a matrix) and with the data (past 99 energy terms an index can follow a name after one space).
+- Library functions must not print; only CLI `main()` functions do. stdout is the MCP channel.
+- `mdrun -nsteps` is deprecated: change step counts with `convert-tpr -nsteps`.
+- Workflow steps must not edit their inputs in place; use `pre_copy` and give mdrun steps `reads=[...]` so resume can compare input content.
+- Default output names must be unique (`unique_name`): fixed names collide between calls and GROMACS stops after 99 `#backup#` files.
+- Never let a child process inherit stdin; `run_command_full` and the Popen calls pass `stdin=DEVNULL` when there is nothing to send.
+- When a test guards a fix, check it fails with the fix removed (the job and workflow tests were checked this way).

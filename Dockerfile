@@ -1,41 +1,35 @@
 FROM continuumio/miniconda3:24.11.1-0
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential cmake libfftw3-dev \
-    && rm -rf /var/lib/apt/lists/*
+# GROMACS from conda-forge. Override with: docker build --build-arg GROMACS_VERSION=2025.4 .
+ARG GROMACS_VERSION=2025.4
+ARG PYTHON_VERSION=3.12
+
+RUN conda install -y -c conda-forge "python=${PYTHON_VERSION}" "gromacs=${GROMACS_VERSION}" \
+    && conda clean -afy \
+    && gmx --version | head -3
 
 WORKDIR /app
 
-# Create conda environment with Python 3.10 and GROMACS
-RUN conda install -c conda-forge -y \
-    python=3.10 \
-    gromacs=2025.4 \
-    mpi4py \
-    numpy \
-    networkx \
-    packaging \
-    && conda clean -afy
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Python MCP dependencies
-RUN pip install --no-cache-dir \
-    fastmcp \
-    loguru \
-    pandas
-
-# Verify GROMACS installation (acts as a build-time checkpoint)
-RUN gmx --version | head -3
-
-# Copy application code
 COPY src/ ./src/
-RUN chmod -R a+r /app/src/
 COPY scripts/ ./scripts/
-RUN chmod -R a+r /app/scripts/
+COPY examples/ ./examples/
 COPY configs/ ./configs/
-RUN chmod -R a+r /app/configs/
-RUN mkdir -p jobs tmp/inputs tmp/outputs results && \
-    chmod 777 /app /app/jobs /app/tmp /app/tmp/inputs /app/tmp/outputs /app/results
+# sample.tpr is version specific, so build it with this image's GROMACS
+RUN python scripts/make_example_data.py --tpr-only && chmod -R a+rX /app
 
-ENV PYTHONPATH=/app
+# Runtime files (jobs, results, logs) live in /data. The container is usually started with
+# --user `id -u`:`id -g`, so /data is world writable with the sticky bit.
+RUN useradd --create-home --uid 1000 mcp \
+    && mkdir -p /data && chmod 1777 /data
+ENV GMX_MCP_HOME=/data \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+USER mcp
+
+HEALTHCHECK --interval=60s --timeout=20s --retries=2 \
+    CMD gmx --version > /dev/null 2>&1 || exit 1
 
 CMD ["python", "src/server.py"]
