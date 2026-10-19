@@ -120,17 +120,21 @@ def fake_gmx(tmp_path, monkeypatch):
                 return []
             return [json.loads(line) for line in log.read_text().splitlines()]
 
+        def _real(self):
+            # the --version probe and the `help <tool>` lookup of file options are not the command under test
+            return [r for r in self._records() if r["argv"] != ["--version"] and r["argv"][:1] != ["help"]]
+
         def calls(self):
-            """argv of every real command (the --version probe the wrapper makes is left out)."""
-            return [r["argv"] for r in self._records() if r["argv"] != ["--version"]]
+            """argv of every real command."""
+            return [r["argv"] for r in self._real()]
 
         def cwds(self):
-            return [r["cwd"] for r in self._records() if r["argv"] != ["--version"]]
+            return [r["cwd"] for r in self._real()]
 
         def stdin(self):
             """Text received on stdin by the last real command. The shell strips trailing newlines
             of its command substitution, so compare with .rstrip()."""
-            real = [r for r in self._records() if r["argv"] != ["--version"]]
+            real = self._real()
             return real[-1]["stdin"] if real else ""
 
     return Helper()

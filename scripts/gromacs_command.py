@@ -267,15 +267,21 @@ def run_gromacs_command(
         if base is not None and not base.is_dir():
             raise ValueError(f"working_directory does not exist or is not a folder: {base}")
 
-        in_paths: Dict[str, Path] = {}
+        in_paths: Dict[str, Path] = {}  # first file of each option
+        in_more: Dict[str, List[Path]] = {}  # further files of options that take several (trjcat -f a b)
         for flag, filepath in (input_files or {}).items():
             _validate_flag(flag)
             if not filepath:
                 continue
-            resolved = _resolve_path(filepath, base)
-            if not check_file_exists(resolved, f"Input file (-{flag})"):
-                return _fail(f"Input file for -{flag} not found: {resolved}", command=command_name)
-            in_paths[flag] = resolved
+            items = list(filepath) if isinstance(filepath, (list, tuple)) else [filepath]
+            resolved_items = []
+            for item in items:
+                resolved = _resolve_path(item, base)
+                if not check_file_exists(resolved, f"Input file (-{flag})"):
+                    return _fail(f"Input file for -{flag} not found: {resolved}", command=command_name)
+                resolved_items.append(resolved)
+            in_paths[flag] = resolved_items[0]
+            in_more[flag] = resolved_items[1:]
 
         out_paths: Dict[str, Path] = {}
         for flag, filepath in (output_files or {}).items():
@@ -286,7 +292,7 @@ def run_gromacs_command(
 
         extra = _validate_parameters(parameters)
         check_forbidden_options(extra + [f"-{flag}" for flag in list(in_paths) + list(out_paths)])
-        for path in list(in_paths.values()) + list(out_paths.values()):
+        for path in list(in_paths.values()) + [q for qs in in_more.values() for q in qs] + list(out_paths.values()):
             check_shell_safe_path(path)
         _check_parameter_names(extra)
         if command_name == "grompp":
@@ -305,13 +311,14 @@ def run_gromacs_command(
             cwd = anchor.parent if anchor else get_workdir_root()
         _check_parameter_paths(extra, cwd or Path.cwd())
         gmx = find_gromacs_command()
+        _check_file_option_values(extra, _tool_file_options(tuple(gmx), command_name))
     except (ValueError, PathNotAllowedError, GromacsNotFoundError) as e:
         return _fail(str(e), command=command_name)
 
     warnings: List[str] = []
     full_cmd = gmx + [command_name]
     for flag, path in in_paths.items():
-        full_cmd += [f"-{flag}", str(path)]
+        full_cmd += [f"-{flag}", str(path)] + [str(q) for q in in_more.get(flag, [])]
 
     # output folders exist before gmx starts: it may run inside one of them (cwd above)
     for path in out_paths.values():
@@ -420,6 +427,40 @@ def parse_help_options(help_text: str) -> List[str]:
             if m.group(1):
                 names.append("no" + m.group(2))
     return list(dict.fromkeys(names))
+
+
+_PLAIN_FILE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+
+
+def _check_file_option_values(params: List[str], file_options: frozenset) -> None:
+    """
+    Decide by position, not by looks: the values after a file option (from the tool's own help) are
+    file names, and gmx may hand file names to a shell. In parameters they must be plain names such as
+    spc216.gro (a library file, or one in the run folder); paths go through input_files or output_files,
+    where they are resolved, sandboxed and checked.
+    """
+    option = None
+    for a in params:
+        if a.startswith("-") and not re.match(r"^-\d", a):
+            option = a.lstrip("-").lower() if a.lstrip("-").lower() in file_options else None
+            continue
+        if option and (not _PLAIN_FILE_NAME.match(a) or a.lower().endswith((".gz", ".z"))):
+            raise ValueError(f"-{option} {a!r}: in parameters a file option takes plain file names only "
+                             "(letters, digits, . _ + -); pass paths as input_files or output_files")
+
+
+_HELP_FILE_OPTION_RE = re.compile(r"^ -([A-Za-z][\w-]*)\s+(\[<|<file>)")
+
+
+def parse_help_file_options(help_text: str) -> List[str]:
+    """Options of `gmx help <tool>` that take file names: `-f [<.xtc/.trr/...>]`, `-sf <file>`."""
+    return list(dict.fromkeys(m.group(1) for m in map(_HELP_FILE_OPTION_RE.match, help_text.splitlines()) if m))
+
+
+@lru_cache(maxsize=64)
+def _tool_file_options(gmx_key: Tuple[str, ...], command_name: str) -> frozenset:
+    res = run_command_full(list(gmx_key) + ["help", command_name], timeout=60)
+    return frozenset(o.lower() for o in parse_help_file_options(res["stdout"])) if res["success"] else frozenset()
 
 
 @lru_cache(maxsize=64)

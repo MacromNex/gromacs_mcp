@@ -135,6 +135,18 @@ class TestRunCommand:
             assert r["result"] is False and "not allowed" in r["error"]
         assert not marker.exists()
 
+    def test_file_option_value_without_a_suffix_is_checked(self, short_run, tmp_path):
+        # no slash and no suffix, but it follows a file option (-f2), so gmx would treat it as a file name
+        r = run_gromacs_command("check", {"f": short_run / "md.xtc"}, parameters=["-f2", "x$(touch PWNED)"])
+        assert r["result"] is False and "plain file names" in r["error"]
+        assert not (short_run / "PWNED").exists()
+
+    def test_trjcat_joins_several_inputs(self, short_run, tmp_path):
+        r = run_gromacs_command("trjcat", {"f": [short_run / "md.xtc", short_run / "md.xtc"]},
+                                {"o": tmp_path / "joined.xtc"}, ["-cat"])
+        assert r["result"] is True, r.get("error")
+        assert (tmp_path / "joined.xtc").stat().st_size > 1.9 * (short_run / "md.xtc").stat().st_size
+
     def test_unknown_option_gets_suggestions(self, short_run, tmp_path):
         # TODO 12.3 (partly): name the closest valid options instead of only the rejected one
         r = run_gromacs_command("rdf", {"f": short_run / "md.xtc", "s": short_run / "md.tpr"},

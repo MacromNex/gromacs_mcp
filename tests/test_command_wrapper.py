@@ -97,6 +97,27 @@ class TestNoShell:
         assert run_gromacs_command("energy", {"f": f}, {"o": tmp_path / "e`x`.xvg"}, selections=["1"])["result"] is False
         assert fake_gmx.calls() == [] and not marker.exists()
 
+    def test_file_options_in_parameters_take_plain_names_only(self, fake_gmx, fixtures, tmp_path, monkeypatch):
+        # decided by position: whatever follows a file option of the tool (read from its help) is a file
+        # name, with or without a slash or suffix
+        monkeypatch.setenv("FAKE_GMX_STDOUT", (fixtures / "gmx_help_rdf.txt").read_text())
+        f, s = tmp_path / "a.xtc", tmp_path / "a.tpr"
+        f.write_bytes(b"x"); s.write_bytes(b"x")
+        for params in (["-sf", "sel$(id)"], ["-n", "x;id"], ["--n", str(tmp_path / "i.ndx")], ["-n", "../i.ndx"],
+                       ["-ref", "name OW", "-sf", "a b"]):
+            r = run_gromacs_command("rdf", {"f": f, "s": s}, parameters=params)
+            assert r["result"] is False and "plain file names" in r["error"], params
+        assert fake_gmx.calls() == []
+        r = run_gromacs_command("rdf", {"f": f, "s": s}, parameters=["-n", "index.ndx", "-bin", "-0.5", "-ref", "x < 1"])
+        assert r["result"] is True
+
+    def test_several_files_for_one_option(self, fake_gmx, tmp_path):
+        a, b = tmp_path / "a.xtc", tmp_path / "b.xtc"
+        a.write_bytes(b"x"); b.write_bytes(b"x")
+        assert run_gromacs_command("trjcat", {"f": [a, b]}, {"o": tmp_path / "all.xtc"})["result"] is True
+        argv = fake_gmx.calls()[0]
+        assert argv[argv.index("-f") + 1:argv.index("-f") + 3] == [str(a), str(b)]
+
     def test_viewer_option_is_refused(self, fake_gmx, tmp_path):
         # -w starts a viewer through the shell with the output file name; -now (do not view) is fine
         f = tmp_path / "e.edr"

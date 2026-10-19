@@ -274,7 +274,10 @@ def run_gromacs_command(
     Args:
         command_name: gmx subcommand, for example 'energy', 'rdf', 'grompp', 'check'
         input_files: {option: path}; the option is written without the dash,
-            for example {'f': 'traj.xtc', 's': 'run.tpr', 'e': 'run.edr'}
+            for example {'f': 'traj.xtc', 's': 'run.tpr', 'e': 'run.edr'}. A list gives several
+            files to one option, for example {'f': ['a.xtc', 'b.xtc']} for trjcat. Every file
+            option of the tool goes here or in output_files; in parameters a file option only
+            takes a plain name such as spc216.gro (a GROMACS library file)
         output_files: {option: path}, for example {'o': 'energy.xvg'}. For 'dump' there is
             no -o option: the first path receives the text printed by gmx dump
         parameters: extra arguments, one list element per argument, for example
